@@ -1,0 +1,9 @@
+{
+  "intervalSeconds": 5,
+  "periodValue": 1,
+  "periodUnit": "hour",
+  "enabledCameraIds": [
+    "camera_1765877404751",
+    "camera_1766036401659"
+  ]
+}

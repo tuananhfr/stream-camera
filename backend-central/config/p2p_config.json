@@ -1,0 +1,14 @@
+{
+  "this_central": {
+    "id": "central-2",
+
+    "ip": "10.248.59.19",
+    "api_port": 8000
+  },
+  "peer_centrals": [
+    {
+      "id": "central-1",
+      "ip": "192.168.0.144"
+    }
+  ]
+}

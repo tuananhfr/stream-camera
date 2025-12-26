@@ -1,0 +1,26 @@
+# Device ID - unique identifier for this unified_app instance
+device_id: parking-edge-001
+
+streams:
+  a: rtsp://tuananh:tuananh123@192.168.0.60:554/stream1
+metadata:
+  a:
+    name: khu a
+    type: rtsp
+model:
+  path: license_plate.onnx
+ocr:
+  path: ocr.onnx
+voting:
+  enabled: true
+  window_seconds: 1.5
+  min_votes: 2
+  similarity_threshold: 0.85
+  dedup_interval: 15.0
+central:
+  enabled: false
+  url: ''
+  device_id: ''
+target_server:
+  ip: 192.168.0.78
+  port: 8000

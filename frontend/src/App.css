@@ -1,0 +1,93 @@
+/* App Root - Full Viewport, No Scroll */
+#root {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* Override Bootstrap container-fluid padding to prevent overflow */
+.container-fluid {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Ensure no overflow on main app container */
+.app-container {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* Prevent any element from overflowing */
+* {
+  box-sizing: border-box;
+}
+
+/* Ensure row doesn't add negative margins */
+.row {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* Ensure columns don't add padding that causes overflow */
+.row > * {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Camera Grid - Full height, no scroll */
+.camera-grid-container {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.camera-grid {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: 2px;
+}
+
+/* Offcanvas animation - đảm bảo animation cả mở và đóng */
+.offcanvas {
+  transition: transform 0.3s ease-in-out;
+  visibility: visible;
+}
+
+.offcanvas:not(.show) {
+  transform: translateX(-100%);
+}
+
+.offcanvas.show {
+  transform: translateX(0);
+}
+
+/* Backdrop animation */
+.offcanvas-backdrop {
+  transition: opacity 0.15s linear;
+}
+
+.offcanvas-backdrop:not(.show) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.offcanvas-backdrop.show {
+  opacity: 0.5;
+}
