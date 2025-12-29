@@ -13,11 +13,12 @@ import re
 import cv2
 import numpy as np
 
-from .detector import get_detector, get_ocr_service, crop_plate_image
+from .detector import get_detector, get_ocr_service, crop_plate_image, detect_plates_two_stage
 from .config import load_config
 from .db import insert_ocr_log, init_db
 from .plate_tracker import PlateTracker
 from .events import get_event_emitter
+from .ocr_sender import send_ocr_to_central
 
 
 def normalize_plate_text(text: str) -> str:
@@ -81,12 +82,14 @@ class CameraWorker:
 
     camera_id: str
     url: str
-    target_fps: float = 5.0
+    target_fps: float = 5.0  # Keep original FPS
+    vid_stride: int = 3  # Process 1 out of every 3 frames (balance speed vs accuracy)
 
     running: bool = field(default=False, init=False)
     reader_thread: Optional[threading.Thread] = field(default=None, init=False)
     detector_thread: Optional[threading.Thread] = field(default=None, init=False)
 
+    frame_counter: int = field(default=0, init=False)  # Counter for frame skipping
     raw_frame: Optional[np.ndarray] = field(default=None, init=False)
     latest_frame: Optional[np.ndarray] = field(default=None, init=False)
     latest_detections: List[dict] = field(default_factory=list, init=False)
@@ -94,7 +97,7 @@ class CameraWorker:
     last_update_ts: float = field(default=0.0, init=False)
     
     # OCR queue và result
-    ocr_queue: Queue = field(default_factory=Queue, init=False)  # Queue các crop cần OCR
+    ocr_queue: Queue = field(default_factory=lambda: Queue(maxsize=5), init=False)  # Queue các crop cần OCR (max 5 để tránh memory leak)
     ocr_thread: Optional[threading.Thread] = field(default=None, init=False)
     latest_ocr_text: str = field(default="", init=False)  # OCR result mới nhất
     latest_ocr_timestamp: float = field(default=0.0, init=False)  # Timestamp của OCR result
@@ -249,6 +252,8 @@ class CameraWorker:
         detector = get_detector()
         detect_interval = 1.0 / max(self.target_fps, 0.1)  # giãn cách xử lý, không phải FPS camera
         last_detect = 0.0
+        frame_skip_counter = 0
+
         while self.running:
             now = time.time()
             if now - last_detect < detect_interval:
@@ -269,12 +274,45 @@ class CameraWorker:
                 time.sleep(0.01)
                 continue
 
+            # Process every frame (no skipping - same as test script)
+            # REMOVED frame skipping to ensure we don't miss detections
+
             last_detect = now
 
             # Detection với error handling
             try:
-                detections = detector.detect_from_frame(frame, conf_threshold=0.25, iou_threshold=0.45)
-                drawn = detector.draw_detections(frame, detections, color=(0, 255, 0), thickness=2)
+                # 🔥 2-STAGE DETECTION: Detect vehicles first, then plates (with fallback)
+                plates_with_vehicles = detect_plates_two_stage(
+                    frame,
+                    vehicle_conf=0.5,
+                    plate_conf=0.25,
+                    fallback_direct=True  # Fallback to direct detection if no vehicles
+                )
+
+                # Convert 2-stage results to old detection format for compatibility
+                detections = []
+                drawn = frame.copy()
+
+                for (plate_x1, plate_y1, plate_x2, plate_y2, plate_conf, plate_cls, vehicle_bbox) in plates_with_vehicles:
+                    # Draw vehicle box (blue) if available
+                    if vehicle_bbox is not None:
+                        veh_x1, veh_y1, veh_x2, veh_y2 = vehicle_bbox
+                        cv2.rectangle(drawn, (int(veh_x1), int(veh_y1)), (int(veh_x2), int(veh_y2)), (255, 0, 0), 2)
+                        cv2.putText(drawn, "Vehicle", (int(veh_x1), int(veh_y1) - 5),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+
+                    # Draw plate box (green)
+                    cv2.rectangle(drawn, (int(plate_x1), int(plate_y1)), (int(plate_x2), int(plate_y2)), (0, 255, 0), 2)
+                    cv2.putText(drawn, f"Plate {plate_conf:.2f}", (int(plate_x1), int(plate_y1) - 5),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                    # Add to detections list
+                    detections.append({
+                        "bbox": [int(plate_x1), int(plate_y1), int(plate_x2), int(plate_y2)],
+                        "confidence": plate_conf,
+                        "class_id": plate_cls,
+                        "vehicle_bbox": vehicle_bbox
+                    })
 
                 self.latest_frame = drawn
                 self.latest_detections = detections
@@ -282,7 +320,7 @@ class CameraWorker:
                 # FPS xấp xỉ theo khoảng cách 2 lần detect
                 dt = max(self.last_update_ts - now, 1e-3)
                 self.stats["fps"] = 1.0 / dt
-                
+
                 # Crop ảnh từ detection đầu tiên (nếu có) và queue vào OCR
                 if detections:
                     first_det = detections[0]
@@ -298,7 +336,7 @@ class CameraWorker:
                             })
                         except:
                             pass  # Queue đầy, bỏ qua (đã có task đang xử lý)
-                    
+
             except Exception as e:
                 # Bỏ qua lỗi detection (frame corrupt, model error, etc.)
                 logging.debug(f"[{self.camera_id}] Detection error (ignored): {e}")
@@ -329,8 +367,12 @@ class CameraWorker:
                 task_timestamp = task["timestamp"]
 
                 try:
-                    # OCR
+                    # OCR (YOLO OCR)
                     raw_text = ocr_service.recognize(image)
+
+                    if not raw_text:
+                        continue  # Skip if OCR returns empty
+
                     normalized_text = normalize_plate_text(raw_text)
 
                     # Bỏ qua nếu không hợp lệ theo format biển số VN
@@ -398,6 +440,35 @@ class CameraWorker:
                                         except Exception as e:
                                             # Không crash nếu signal fail
                                             logging.debug(f"[{self.camera_id}] Failed to emit signal: {e}")
+
+                                        # 📤 GỬI OCR VỀ CENTRAL SERVER
+                                        try:
+                                            # Lấy camera_name từ metadata
+                                            meta = cfg.get("metadata", {}).get(self.camera_id, {})
+                                            camera_name = meta.get("name") or self.camera_id
+                                            
+                                            # Gửi về Central (non-blocking)
+                                            success = send_ocr_to_central(
+                                                camera_id=self.camera_id,
+                                                camera_name=camera_name,
+                                                plate_text=finalized_plate,
+                                                timestamp=ts_str
+                                            )
+                                            
+                                            if success:
+                                                logging.info(
+                                                    f"[{self.camera_id}] 📤 Sent to Central: {finalized_plate} "
+                                                    f"→ {camera_name}"
+                                                )
+                                            else:
+                                                # 404 là bình thường (xe chưa vào), chỉ log debug
+                                                logging.debug(
+                                                    f"[{self.camera_id}] Central: Vehicle {finalized_plate} "
+                                                    f"not in parking or network error"
+                                                )
+                                        except Exception as central_e:
+                                            # Không crash nếu gửi fail
+                                            logging.error(f"[{self.camera_id}] Error sending to Central: {central_e}")
 
                                     except Exception as db_e:
                                         logging.error(f"[{self.camera_id}] Failed to save OCR log: {db_e}")

@@ -104,17 +104,27 @@ class VideoWidget(QtWidgets.QWidget):
         qimg = QtGui.QImage(rgb.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_RGB888)
         pix = QtGui.QPixmap.fromImage(qimg)
         
-        # Scale pixmap giữ tỷ lệ khung hình để fit vào label
-        label_size = self.video_label.size()
-        if label_size.width() > 0 and label_size.height() > 0:
+        # Scale pixmap dựa vào parent widget size (không dùng label size để tránh expand loop)
+        # Lấy size của VideoWidget (parent) thay vì label để đảm bảo không tự expand
+        parent_width = self.width()
+        parent_height = self.height()
+
+        if parent_width > 100 and parent_height > 100:
+            # Calculate target size (leave space for title and info area)
+            target_width = parent_width - 10
+            target_height = int((parent_height - 250) * 0.7)  # Reserve space for info area
+
             scaled_pix = pix.scaled(
-                label_size,
+                target_width,
+                target_height,
                 QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation
+                QtCore.Qt.TransformationMode.FastTransformation  # Faster for real-time
             )
             self.video_label.setPixmap(scaled_pix)
         else:
-            self.video_label.setPixmap(pix)
+            # Fallback: just scale to a reasonable default size
+            scaled_pix = pix.scaledToWidth(640, QtCore.Qt.TransformationMode.FastTransformation)
+            self.video_label.setPixmap(scaled_pix)
         
         # Cập nhật detection info: lấy cropped image, OCR text và hiển thị
         cropped_image = camera_manager.get_cropped_image(self.camera_id)

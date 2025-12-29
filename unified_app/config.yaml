@@ -1,14 +1,16 @@
-# Device ID - unique identifier for this unified_app instance
 device_id: parking-edge-001
-
 streams:
   a: rtsp://tuananh:tuananh123@192.168.0.60:554/stream1
+  video_test: video.mp4
 metadata:
   a:
     name: khu a
     type: rtsp
+  video_test:
+    name: Test Video
+    type: rtsp
 model:
-  path: license_plate.onnx
+  path: best.onnx
 ocr:
   path: ocr.onnx
 voting:

@@ -4,13 +4,16 @@ Detector and OCR service module
 import os
 import logging
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import numpy as np
+import cv2
 
 # Import ONNX detector from core directory
 from .onnx_detector import ONNXLicensePlateDetector
+from .vehicle_detector import VehicleDetector
 
 _shared_detector: Optional[ONNXLicensePlateDetector] = None
+_shared_vehicle_detector: Optional[VehicleDetector] = None
 
 
 def get_detector() -> ONNXLicensePlateDetector:
@@ -20,12 +23,23 @@ def get_detector() -> ONNXLicensePlateDetector:
         # Đọc model path từ config.yaml
         from .config import load_config
         cfg = load_config()
-        model_name = cfg.get("model", {}).get("path", "model1.onnx")
+        model_name = cfg.get("model", {}).get("path", "best.onnx")
         models_dir = Path(__file__).resolve().parent.parent / "models"
         model_path = str(models_dir / model_name)
         logging.info(f"[DETECTOR] Loading ONNX model from {model_path}")
         _shared_detector = ONNXLicensePlateDetector(model_path=model_path)
     return _shared_detector
+
+
+def get_vehicle_detector() -> VehicleDetector:
+    """Shared vehicle detector instance"""
+    global _shared_vehicle_detector
+    if _shared_vehicle_detector is None:
+        models_dir = Path(__file__).resolve().parent.parent / "models"
+        model_path = str(models_dir / "yolov8n.onnx")
+        logging.info(f"[VEHICLE] Loading YOLOv8n from {model_path}")
+        _shared_vehicle_detector = VehicleDetector(model_path=model_path)
+    return _shared_vehicle_detector
 
 
 class OCRService:
@@ -176,11 +190,11 @@ def get_ocr_service() -> OCRService:
 def crop_plate_image(frame: np.ndarray, bbox: List[int]) -> Optional[np.ndarray]:
     """
     Crop vùng biển số từ frame
-    
+
     Args:
         frame: Full frame (BGR)
         bbox: [x1, y1, x2, y2]
-    
+
     Returns:
         Cropped image hoặc None nếu bbox không hợp lệ
     """
@@ -192,13 +206,116 @@ def crop_plate_image(frame: np.ndarray, bbox: List[int]) -> Optional[np.ndarray]
         y1 = max(0, int(y1))
         x2 = min(frame.shape[1], int(x2))
         y2 = min(frame.shape[0], int(y2))
-        
+
         if x2 <= x1 or y2 <= y1:
             return None
-        
+
         plate_roi = frame[y1:y2, x1:x2]
         return plate_roi
     except Exception as e:
         logging.error(f"Error cropping plate: {e}")
         return None
+
+
+def detect_plates_two_stage(
+    frame: np.ndarray,
+    vehicle_conf: float = 0.5,
+    plate_conf: float = 0.4,
+    fallback_direct: bool = True
+) -> List[Tuple[int, int, int, int, float, int, Optional[Tuple[int, int, int, int]]]]:
+    """
+    2-stage detection: Detect vehicles first, then license plates within vehicle ROIs
+
+    Args:
+        frame: Input frame (BGR)
+        vehicle_conf: Confidence threshold for vehicle detection
+        plate_conf: Confidence threshold for plate detection
+        fallback_direct: If True, fallback to direct plate detection if no vehicles found
+
+    Returns:
+        List of (plate_x1, plate_y1, plate_x2, plate_y2, plate_conf, plate_cls, vehicle_bbox)
+        vehicle_bbox is (veh_x1, veh_y1, veh_x2, veh_y2) or None if direct detection
+    """
+    try:
+        vehicle_detector = get_vehicle_detector()
+    except Exception as e:
+        logging.warning(f"[2-STAGE] Vehicle detector not available: {e}, using direct detection")
+        # Fallback to direct detection
+        plate_detector = get_detector()
+        plates = plate_detector.detect_from_frame(frame, conf_threshold=plate_conf)
+        results = []
+        for det in plates:
+            bbox = det["bbox"]
+            plate_x1, plate_y1, plate_x2, plate_y2 = bbox
+            plate_conf = det["confidence"]
+            plate_cls = det["class_id"]
+            results.append((
+                int(plate_x1), int(plate_y1), int(plate_x2), int(plate_y2),
+                plate_conf, plate_cls, None
+            ))
+        return results
+
+    plate_detector = get_detector()
+    results = []
+
+    # Stage 1: Detect vehicles
+    vehicles = vehicle_detector.detect_vehicles(frame, conf_threshold=vehicle_conf)
+
+    if not vehicles:
+        logging.debug("[2-STAGE] No vehicles detected")
+
+        # Fallback to direct plate detection
+        if fallback_direct:
+            logging.debug("[2-STAGE] Falling back to direct plate detection")
+            plates = plate_detector.detect_from_frame(frame, conf_threshold=plate_conf)
+            for det in plates:
+                bbox = det["bbox"]
+                plate_x1, plate_y1, plate_x2, plate_y2 = bbox
+                plate_conf = det["confidence"]
+                plate_cls = det["class_id"]
+                results.append((
+                    int(plate_x1), int(plate_y1), int(plate_x2), int(plate_y2),
+                    plate_conf, plate_cls, None  # No vehicle bbox
+                ))
+        return results
+
+    logging.debug(f"[2-STAGE] Found {len(vehicles)} vehicles")
+
+    # Stage 2: Detect plates within each vehicle ROI
+    for veh_x1, veh_y1, veh_x2, veh_y2, veh_conf, veh_cls in vehicles:
+        # Crop vehicle ROI
+        veh_roi = crop_plate_image(frame, [veh_x1, veh_y1, veh_x2, veh_y2])
+        if veh_roi is None:
+            continue
+
+        # Detect plates in vehicle ROI
+        plates = plate_detector.detect_from_frame(veh_roi, conf_threshold=plate_conf)
+
+        if plates:
+            logging.debug(f"[2-STAGE] Found {len(plates)} plates in vehicle {veh_cls}")
+
+            # Map plate coordinates back to original frame
+            for det in plates:
+                bbox = det["bbox"]
+                plate_x1, plate_y1, plate_x2, plate_y2 = bbox
+                plate_conf = det["confidence"]
+                plate_cls = det["class_id"]
+
+                # Add vehicle ROI offset
+                global_x1 = veh_x1 + plate_x1
+                global_y1 = veh_y1 + plate_y1
+                global_x2 = veh_x1 + plate_x2
+                global_y2 = veh_y1 + plate_y2
+
+                results.append((
+                    global_x1,
+                    global_y1,
+                    global_x2,
+                    global_y2,
+                    plate_conf,
+                    plate_cls,
+                    (veh_x1, veh_y1, veh_x2, veh_y2)  # Include parent vehicle bbox
+                ))
+
+    return results
 

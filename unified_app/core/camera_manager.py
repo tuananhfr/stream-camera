@@ -3,20 +3,21 @@ Camera Manager module - manages cameras and workers
 """
 import logging
 import threading
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Union
 
 import numpy as np
 from fastapi import HTTPException
 
 from .config import load_config, save_config
 from .camera_worker import CameraWorker
+from .video_worker import VideoSourceWorker
 from api.models import CameraCreate, CameraUpdate, CameraOut
 
 
 class CameraManager:
     def __init__(self):
         self.cfg = load_config()
-        self.workers: Dict[str, CameraWorker] = {}
+        self.workers: Dict[str, Union[CameraWorker, VideoSourceWorker]] = {}
         self.lock = threading.Lock()
 
     def list_cameras(self) -> List[CameraOut]:
@@ -94,7 +95,23 @@ class CameraManager:
             url = self.cfg["streams"].get(cid)
             if not url:
                 raise HTTPException(status_code=404, detail="Camera not found")
-            worker = CameraWorker(camera_id=cid, url=url, target_fps=fps)
+
+            # Check source type from metadata
+            meta = self.cfg.get("metadata", {}).get(cid, {})
+            source_type = meta.get("type", "rtsp")
+
+            # Create appropriate worker based on source type
+            if source_type == "video":
+                # Video file worker
+                worker = VideoSourceWorker(
+                    video_id=cid,
+                    video_path=url,
+                    target_fps=fps
+                )
+            else:
+                # RTSP camera worker (default)
+                worker = CameraWorker(camera_id=cid, url=url, target_fps=fps)
+
             self.workers[cid] = worker
             worker.start()
 

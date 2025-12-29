@@ -13,7 +13,7 @@ import onnxruntime as ort
 class ONNXLicensePlateDetector:
     """License plate detection using ONNX Runtime (CPU-optimized)"""
 
-    def __init__(self, model_path: str = "models/license_plate.onnx"):
+    def __init__(self, model_path: str = "models/license_plate1.onnx"):
         """
         Initialize ONNX detector
 

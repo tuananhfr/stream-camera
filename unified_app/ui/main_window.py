@@ -17,7 +17,7 @@ class MainWindow(QtWidgets.QWidget):
         self.setWindowTitle("Unified Camera App")
         self.resize(1400, 800)
         self.setStyleSheet("background-color: #1a1a1a;")
-        
+
         # Top bar với icon settings và nút xem log
         top_bar = QtWidgets.QHBoxLayout()
         top_bar.setContentsMargins(10, 5, 10, 5)
@@ -43,17 +43,18 @@ class MainWindow(QtWidgets.QWidget):
         top_bar.addStretch()  # Đẩy icon sang phải
         top_bar.addWidget(self.logs_btn)
         top_bar.addWidget(self.settings_btn)
-        
-        # Video layout: luôn 3 cột cố định, mỗi camera chiếm 1/3 màn hình
+
+        # Video layout: luôn 3 cột cố định, mỗi camera/video chiếm 1/3 màn hình
+        # (Gộp cả RTSP cameras và video files vào cùng 1 grid)
         self.video_container = QtWidgets.QWidget()
         self.video_layout = QtWidgets.QHBoxLayout(self.video_container)
         self.video_layout.setSpacing(10)
         self.video_layout.setContentsMargins(5, 5, 5, 5)
-        
-        # Dictionary để lưu video widgets theo camera_id
+
+        # Dictionary để lưu video widgets theo camera_id/video_id
         self.video_widgets: Dict[str, VideoWidget] = {}
-        
-        # Tạo 3 slots cố định (có thể là None nếu chưa có camera)
+
+        # Tạo 3 slots cố định (có thể là None nếu chưa có source)
         self.video_slots: List[Optional[VideoWidget]] = [None, None, None]
 
         # Main layout
@@ -80,11 +81,11 @@ class MainWindow(QtWidgets.QWidget):
         dialog.exec()
     
     def refresh_video_grid(self):
-        """Refresh video grid - đảm bảo layout luôn chia đều 1/3"""
+        """Refresh video grid - hiển thị cả cameras và videos trong cùng 1 grid"""
         try:
-            cameras = camera_manager.list_cameras()
-            max_cameras = min(3, len(cameras))
-            
+            sources = camera_manager.list_cameras()  # Includes both cameras and videos
+            max_sources = min(3, len(sources))
+
             # Xóa tất cả widgets cũ (nhưng không delete ngay để tránh block)
             widgets_to_delete = []
             while self.video_layout.count():
@@ -93,26 +94,36 @@ class MainWindow(QtWidgets.QWidget):
                     widget = item.widget()
                     widget.setParent(None)
                     widgets_to_delete.append(widget)
-            
+
             # Đảm bảo layout có spacing và margins đúng
             self.video_layout.setSpacing(10)
             self.video_layout.setContentsMargins(5, 5, 5, 5)
-            
+
             # Xóa khỏi dict
             self.video_widgets.clear()
             self.video_slots = [None, None, None]
-            
+
             # Tạo widgets mới - LUÔN có đủ 3 widgets với stretch = 1
             for idx in range(3):
-                if idx < max_cameras:
-                    cam = cameras[idx]
-                    video_widget = VideoWidget(camera_id=cam.id, camera_name=cam.name, parent=self.video_container)
-                    self.video_widgets[cam.id] = video_widget
+                if idx < max_sources:
+                    source = sources[idx]
+                    # Display name with icon based on type
+                    if source.type == "video":
+                        display_name = f"🎬 {source.name}"
+                    else:
+                        display_name = f"📹 {source.name}"
+
+                    video_widget = VideoWidget(
+                        camera_id=source.id,
+                        camera_name=display_name,
+                        parent=self.video_container
+                    )
+                    self.video_widgets[source.id] = video_widget
                     self.video_slots[idx] = video_widget
                     self.video_layout.addWidget(video_widget, 1)  # stretch = 1, chia đều
                 else:
                     # Placeholder - phải có size policy giống VideoWidget
-                    placeholder = QtWidgets.QLabel("No Camera")
+                    placeholder = QtWidgets.QLabel("No Source")
                     placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                     placeholder.setStyleSheet("background-color: #222; color: #888; border: 1px solid #555; font-size: 16px;")
                     # Size policy: Expanding để layout chia đều
@@ -124,11 +135,11 @@ class MainWindow(QtWidgets.QWidget):
                     placeholder.setMinimumSize(320, 240)
                     self.video_slots[idx] = None
                     self.video_layout.addWidget(placeholder, 1)  # stretch = 1, chia đều
-            
+
             # Force update layout
             self.video_container.update()
             self.update()
-            
+
             # Delete widgets cũ sau khi đã tạo mới (tránh block UI)
             def _delete_old_widgets():
                 for widget in widgets_to_delete:
@@ -136,9 +147,9 @@ class MainWindow(QtWidgets.QWidget):
                         widget.deleteLater()
                     except:
                         pass
-            
+
             QtCore.QTimer.singleShot(100, _delete_old_widgets)
-            
+
         except Exception as e:
             logging.error(f"Error refreshing video grid: {e}")
             import traceback
